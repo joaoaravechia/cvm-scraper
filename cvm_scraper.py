@@ -1,8 +1,13 @@
 """
 Extrai dados da Composição da Carteira de fundos
 do site CVM FundosReg e salva em Excel separado por fundo.
+
+Variáveis de ambiente opcionais:
+  INPUT_COMPETENCIA  - competência no formato MM/AAAA (ex: "02/2026"). Vazio = mais recente.
+  INPUT_CNPJS        - CNPJs separados por vírgula (apenas dígitos). Vazio = todos.
 """
 
+import os
 import time
 import sys
 import pandas as pd
@@ -25,6 +30,33 @@ FUNDOS = [
         "output_file": "patrimonio_liquido_cvm_06175696.xlsx",
     },
 ]
+
+
+def get_fundos_filtrados():
+    """Retorna lista de fundos filtrada por INPUT_CNPJS (se definido)."""
+    cnpjs_input = os.environ.get("INPUT_CNPJS", "").strip()
+    if not cnpjs_input:
+        return FUNDOS
+
+    # Normalizar: apenas dígitos para comparação
+    cnpjs_solicitados = set()
+    for c in cnpjs_input.split(","):
+        digits = "".join(ch for ch in c.strip() if ch.isdigit())
+        if digits:
+            cnpjs_solicitados.add(digits)
+
+    filtrados = []
+    for fundo in FUNDOS:
+        fundo_digits = "".join(ch for ch in fundo["cnpj"] if ch.isdigit())
+        if fundo_digits in cnpjs_solicitados:
+            filtrados.append(fundo)
+
+    if not filtrados:
+        print(f"AVISO: Nenhum fundo encontrado para CNPJs: {cnpjs_input}")
+        print(f"CNPJs disponíveis: {[f['cnpj'] for f in FUNDOS]}")
+        sys.exit(1)
+
+    return filtrados
 
 
 def create_driver():
@@ -125,6 +157,20 @@ def scrape_fundo(driver, fundo):
     time.sleep(3)
 
     sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
+
+    competencia_input = os.environ.get("INPUT_COMPETENCIA", "").strip()
+    if competencia_input:
+        # Selecionar competência específica no dropdown
+        opcoes = [o.text.strip() for o in sel.options]
+        if competencia_input in opcoes:
+            sel.select_by_visible_text(competencia_input)
+            time.sleep(3)  # Aguardar reload da página
+            # Re-obter o Select após reload
+            sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
+        else:
+            print(f"AVISO: Competência '{competencia_input}' não encontrada. Opções: {opcoes}")
+            print("Usando competência padrão (mais recente).")
+
     competencia = sel.first_selected_option.text
     print(f"Competência: {competencia}")
 
@@ -194,10 +240,17 @@ def scrape_fundo(driver, fundo):
 def main():
     print("CVM FundosReg - Extrator de Composição da Carteira")
 
+    fundos = get_fundos_filtrados()
+    print(f"Fundos a processar: {[f['cnpj'] for f in fundos]}")
+
+    comp = os.environ.get("INPUT_COMPETENCIA", "").strip()
+    if comp:
+        print(f"Competência solicitada: {comp}")
+
     driver = create_driver()
 
     try:
-        for fundo in FUNDOS:
+        for fundo in fundos:
             scrape_fundo(driver, fundo)
         print("\nSucesso! Todos os fundos processados.")
     except Exception as e:

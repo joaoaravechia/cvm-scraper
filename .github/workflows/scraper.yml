@@ -3,7 +3,18 @@ name: CVM Scraper Mensal
 on:
   schedule:
     - cron: '0 10 5 * *'  # Dia 5 de cada mês às 10h UTC
-  workflow_dispatch:       # Trigger manual
+  workflow_dispatch:
+    inputs:
+      competencia:
+        description: 'Competência (MM/AAAA). Vazio = mais recente.'
+        required: false
+        default: ''
+        type: string
+      cnpjs:
+        description: 'CNPJs separados por vírgula (só dígitos). Vazio = todos.'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   scrape:
@@ -30,6 +41,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run scraper
+        env:
+          INPUT_COMPETENCIA: ${{ github.event.inputs.competencia || '' }}
+          INPUT_CNPJS: ${{ github.event.inputs.cnpjs || '' }}
         run: python cvm_scraper.py
 
       - name: Upload Excels as artifacts
