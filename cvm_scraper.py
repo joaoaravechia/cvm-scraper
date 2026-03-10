@@ -3,6 +3,7 @@ Extrai dados da Composição da Carteira de fundos
 do site CVM FundosReg e salva em Excel separado por fundo.
 """
 
+import re
 import time
 import sys
 import pandas as pd
@@ -11,22 +12,26 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 
 FUNDOS = [
     {
         "cnpj": "08.915.927/0001-63",
         "cnpj_busca": "08915927000163",
+        "pk_partic": "289707",
         "output_file": "patrimonio_liquido_cvm_08915927.xlsx",
     },
     {
         "cnpj": "06.175.696/0001-73",
         "cnpj_busca": "06175696000173",
+        "pk_partic": None,  # Será descoberto via busca
         "output_file": "patrimonio_liquido_cvm_06175696.xlsx",
     },
 ]
 
-BUSCA_URL = "https://cvmweb.cvm.gov.br/SWB/Sistemas/SCW/CPublica/FormBuscaPartic.aspx?TpConsult=6"
+SEARCH_URL = "https://cvmweb.cvm.gov.br/SWB/default.asp?sg_sistema=fundosreg"
 
 
 def create_driver():
@@ -40,98 +45,67 @@ def create_driver():
     return driver
 
 
-def buscar_fundo_cda(driver, cnpj_busca):
-    """Busca o fundo pelo CNPJ e navega até a página CDA (Composição da Carteira)."""
-    print(f"Buscando fundo {cnpj_busca} ...")
-    driver.get(BUSCA_URL)
-    time.sleep(2)
+def find_pk_partic(driver, cnpj_busca):
+    """Busca o PK_PARTIC do fundo via a interface de busca da CVM com frames."""
+    print(f"Buscando PK_PARTIC para {cnpj_busca} ...")
+    driver.get(SEARCH_URL)
+    time.sleep(3)
 
-    # Preencher CNPJ e clicar em Continuar
-    campo = driver.find_element(By.ID, "txtCNPJNome")
+    # O site usa frameset. Entrar no frame de conteúdo
+    frames = driver.find_elements(By.TAG_NAME, "frame")
+    content_frame = None
+    for frame in frames:
+        name = frame.get_attribute("name") or ""
+        src = frame.get_attribute("src") or ""
+        if "FormBusca" in src or "principal" in name.lower() or "main" in name.lower():
+            content_frame = frame
+            break
+
+    if not content_frame and frames:
+        # Tentar cada frame
+        for frame in frames:
+            try:
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID, "txtCNPJNome"):
+                    content_frame = frame
+                    break
+                driver.switch_to.default_content()
+            except Exception:
+                driver.switch_to.default_content()
+    elif content_frame:
+        driver.switch_to.frame(content_frame)
+
+    # Preencher campo de busca e submeter
+    campo = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located((By.ID, "txtCNPJNome"))
+    )
     campo.clear()
     campo.send_keys(cnpj_busca)
-    driver.find_element(By.ID, "btnContinuar").click()
-    time.sleep(3)
 
-    # Na página de resultados, clicar no link do fundo (contém PK_PARTIC)
-    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
-    if not links:
-        # Pode ser que os resultados estejam dentro de um frame
-        frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
-        for frame in frames:
-            try:
-                driver.switch_to.frame(frame)
-                links = driver.find_elements(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
-                if links:
-                    break
-                driver.switch_to.default_content()
-            except Exception:
-                driver.switch_to.default_content()
+    btn = driver.find_element(By.ID, "btnContinuar")
+    btn.click()
+    time.sleep(5)
 
-    if not links:
-        # Tentar pegar todos os links para debug
-        all_links = driver.find_elements(By.TAG_NAME, "a")
-        print(f"Links encontrados: {len(all_links)}")
-        for link in all_links[:10]:
-            print(f"  {link.get_attribute('href')} - {link.text}")
-        raise Exception(f"Nenhum link com PK_PARTIC encontrado para {cnpj_busca}")
+    # Procurar link com PK_PARTIC na página de resultados
+    page_source = driver.page_source
+    match = re.search(r'PK_PARTIC=(\d+)', page_source)
 
-    # Clicar no primeiro resultado
-    links[0].click()
-    time.sleep(3)
-
-    # Agora estamos na página do fundo. Procurar link para CDA (Composição da Carteira)
     driver.switch_to.default_content()
 
-    # A página do fundo pode usar frames
-    frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
-    for frame in frames:
-        try:
-            driver.switch_to.frame(frame)
-            cda_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Composi")
-            if cda_links:
-                cda_links[0].click()
-                time.sleep(3)
-                return
-            driver.switch_to.default_content()
-        except Exception:
-            driver.switch_to.default_content()
+    if match:
+        pk = match.group(1)
+        print(f"PK_PARTIC encontrado: {pk}")
+        return pk
 
-    # Tentar sem frames
-    cda_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Composi")
-    if cda_links:
-        cda_links[0].click()
-        time.sleep(3)
-        return
-
-    # Se não encontrou "Composição", pode já estar na página CDA
-    if driver.find_elements(By.ID, "ddCOMPTC"):
-        return
-
-    raise Exception(f"Não foi possível navegar até CDA para {cnpj_busca}")
+    raise Exception(f"PK_PARTIC não encontrado para {cnpj_busca}")
 
 
-def scrape_fundo(driver, fundo):
-    cnpj = fundo["cnpj"]
-    cnpj_busca = fundo["cnpj_busca"]
-    output_file = fundo["output_file"]
-
-    print(f"\n--- Processando CNPJ: {cnpj} ---")
-
-    buscar_fundo_cda(driver, cnpj_busca)
-
-    # Garantir que estamos no conteúdo correto (pode estar em frame)
-    if not driver.find_elements(By.ID, "ddCOMPTC"):
-        driver.switch_to.default_content()
-        frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
-        for frame in frames:
-            try:
-                driver.switch_to.frame(frame)
-                if driver.find_elements(By.ID, "ddCOMPTC"):
-                    break
-                driver.switch_to.default_content()
-            except Exception:
-                driver.switch_to.default_content()
+def scrape_cda(driver, cnpj, pk_partic, output_file):
+    """Extrai dados da página CDA usando PK_PARTIC direto."""
+    url = f"https://cvmweb.cvm.gov.br/SWB/Sistemas/SCW/CPublica/CDA/CPublicaCDA.aspx?PK_PARTIC={pk_partic}&SemFrame="
+    print(f"Acessando {url} ...")
+    driver.get(url)
+    time.sleep(3)
 
     sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
     competencia = sel.first_selected_option.text
@@ -149,7 +123,6 @@ def scrape_fundo(driver, fundo):
     print(f"Data Recebimento: {pl_date}")
     print()
 
-    # Extrair tabela de aplicações
     aplics_table = driver.find_element(By.ID, "dlAplics")
     aplics_html = aplics_table.get_attribute("outerHTML")
     tables = pd.read_html(StringIO(aplics_html))
@@ -222,9 +195,6 @@ def scrape_fundo(driver, fundo):
 
     print(f"Arquivo salvo: {output_file}")
 
-    # Voltar ao default content para o próximo fundo
-    driver.switch_to.default_content()
-
 
 def main():
     print("CVM FundosReg - Extrator de Composição da Carteira")
@@ -233,7 +203,18 @@ def main():
 
     try:
         for fundo in FUNDOS:
-            scrape_fundo(driver, fundo)
+            cnpj = fundo["cnpj"]
+            pk_partic = fundo["pk_partic"]
+            output_file = fundo["output_file"]
+
+            print(f"\n--- Processando CNPJ: {cnpj} ---")
+
+            # Se não tem PK_PARTIC, buscar automaticamente
+            if not pk_partic:
+                pk_partic = find_pk_partic(driver, fundo["cnpj_busca"])
+
+            scrape_cda(driver, cnpj, pk_partic, output_file)
+
         print("\nSucesso! Todos os fundos processados.")
     except Exception as e:
         print(f"\nERRO: {e}")
