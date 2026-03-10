@@ -17,7 +17,7 @@
     h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
     .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
     label { display: block; font-weight: 600; margin-bottom: 0.3rem; font-size: 0.9rem; }
-    input[type="text"], input[type="password"] {
+    input[type="text"] {
       width: 100%;
       padding: 0.5rem 0.75rem;
       border: 1px solid #ccc;
@@ -62,19 +62,12 @@
     #status.error { display: block; background: #fef2f2; border: 1px solid #fecaca; }
     a { color: #2563eb; }
     .select-all { font-size: 0.85rem; color: #2563eb; cursor: pointer; margin-left: 0.5rem; }
-    .pat-note { font-size: 0.8rem; color: #888; margin-bottom: 1.5rem; }
   </style>
 </head>
 <body>
 
 <h1>CVM Scraper</h1>
 <p class="subtitle">Dispare a extração de carteiras via GitHub Actions</p>
-
-<div>
-  <label for="pat">GitHub Personal Access Token</label>
-  <input type="password" id="pat" placeholder="ghp_xxxxxxxxxxxx">
-  <p class="pat-note">Precisa de permissão <code>repo</code> e <code>actions:write</code>. Salvo localmente no navegador.</p>
-</div>
 
 <div>
   <label for="competencia">Competência (MM/AAAA)</label>
@@ -94,9 +87,11 @@
 <div id="status"></div>
 
 <script>
+// URL do Cloudflare Worker — atualizar após deploy
+const API_URL = 'https://cvm-scraper-api.joaoaravechia.workers.dev';
+
 const OWNER = 'joaoaravechia';
 const REPO = 'cvm-scraper';
-const WORKFLOW_FILE = 'scraper.yml';
 
 const FUNDOS = [
   { cnpj: '08915927000163', cnpjFmt: '08.915.927/0001-63', nome: 'Fundo 08915927', pk: '289707' },
@@ -105,9 +100,6 @@ const FUNDOS = [
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
-  const savedPat = localStorage.getItem('cvm_github_pat');
-  if (savedPat) document.getElementById('pat').value = savedPat;
-
   const grid = document.getElementById('fundosGrid');
   FUNDOS.forEach((f, i) => {
     const div = document.createElement('div');
@@ -133,24 +125,14 @@ function setStatus(msg, type) {
   el.className = type;
 }
 
-async function ghAPI(path, options = {}) {
-  const pat = document.getElementById('pat').value.trim();
-  const res = await fetch(`https://api.github.com${path}`, {
-    headers: {
-      'Authorization': `Bearer ${pat}`,
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
+async function apiFetch(path, options = {}) {
+  return fetch(`${API_URL}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  return res;
 }
 
 async function executar() {
-  const pat = document.getElementById('pat').value.trim();
-  if (!pat) { setStatus('Informe o GitHub PAT.', 'error'); return; }
-  localStorage.setItem('cvm_github_pat', pat);
-
   const competencia = document.getElementById('competencia').value.trim();
   const cbs = document.querySelectorAll('#fundosGrid input[type=checkbox]:checked');
   if (cbs.length === 0) { setStatus('Selecione ao menos um fundo.', 'error'); return; }
@@ -162,18 +144,15 @@ async function executar() {
   setStatus('Disparando workflow...', 'info');
 
   try {
-    // Dispatch
-    const dispatchRes = await ghAPI(`/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
+    // Dispatch via Worker
+    const dispatchRes = await apiFetch('/dispatch', {
       method: 'POST',
-      body: JSON.stringify({
-        ref: 'main',
-        inputs: { competencia, cnpjs },
-      }),
+      body: JSON.stringify({ competencia, cnpjs }),
     });
 
     if (!dispatchRes.ok) {
-      const err = await dispatchRes.text();
-      throw new Error(`Dispatch falhou (${dispatchRes.status}): ${err}`);
+      const err = await dispatchRes.json();
+      throw new Error(`Dispatch falhou: ${err.error || dispatchRes.status}`);
     }
 
     setStatus('Workflow disparado! Aguardando início...', 'info');
@@ -183,9 +162,9 @@ async function executar() {
     let runId = null;
 
     for (let i = 0; i < 20; i++) {
-      const runsRes = await ghAPI(`/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=5`);
-      const runs = await runsRes.json();
-      const recent = runs.workflow_runs?.[0];
+      const runsRes = await apiFetch('/runs');
+      const data = await runsRes.json();
+      const recent = data.runs?.[0];
       if (recent && (recent.status === 'queued' || recent.status === 'in_progress')) {
         runId = recent.id;
         break;
@@ -205,19 +184,18 @@ async function executar() {
 
     for (let i = 0; i < 60; i++) {
       await new Promise(r => setTimeout(r, 5000));
-      const runRes = await ghAPI(`/repos/${OWNER}/${REPO}/actions/runs/${runId}`);
+      const runRes = await apiFetch(`/runs/${runId}`);
       const run = await runRes.json();
 
       if (run.status === 'completed') {
         if (run.conclusion === 'success') {
-          // Get artifacts
-          const artRes = await ghAPI(`/repos/${OWNER}/${REPO}/actions/runs/${runId}/artifacts`);
+          const artRes = await apiFetch(`/artifacts/${runId}`);
           const artData = await artRes.json();
           const artifact = artData.artifacts?.[0];
 
           let downloadHtml = '';
           if (artifact) {
-            downloadHtml = `<br><a href="https://github.com/${OWNER}/${REPO}/actions/runs/${runId}" target="_blank">Baixar artifacts no GitHub</a>`;
+            downloadHtml = `<br><a href="${artifact.download_url}" target="_blank">Baixar artifacts no GitHub</a>`;
           }
           setStatus(`Concluído com sucesso!${downloadHtml}`, 'success');
         } else {
