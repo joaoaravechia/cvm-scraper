@@ -10,21 +10,24 @@ from io import StringIO
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import Select
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 
 FUNDOS = [
     {
         "cnpj": "08.915.927/0001-63",
-        "pk_partic": "289707",
+        "cnpj_busca": "08915927000163",
         "output_file": "patrimonio_liquido_cvm_08915927.xlsx",
     },
     {
         "cnpj": "06.175.696/0001-73",
-        "pk_partic": "214731",
+        "cnpj_busca": "06175696000173",
         "output_file": "patrimonio_liquido_cvm_06175696.xlsx",
     },
 ]
+
+BUSCA_URL = "https://cvmweb.cvm.gov.br/SWB/Sistemas/SCW/CPublica/FormBuscaPartic.aspx?TpConsult=6"
 
 
 def create_driver():
@@ -34,29 +37,52 @@ def create_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(60)
     return driver
+
+
+def buscar_fundo(driver, cnpj_busca):
+    """Busca o fundo pelo CNPJ na página de busca da CVM e navega até a CDA."""
+    print(f"Buscando fundo {cnpj_busca} ...")
+    driver.get(BUSCA_URL)
+    time.sleep(2)
+
+    # Preencher CNPJ e buscar
+    campo = driver.find_element(By.ID, "txtCNPJNome")
+    campo.clear()
+    campo.send_keys(cnpj_busca)
+    btn = driver.find_element(By.ID, "btnBuscar")
+    btn.click()
+    time.sleep(3)
+
+    # Clicar no link do fundo nos resultados
+    link = driver.find_element(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
+    link.click()
+    time.sleep(3)
+
+    # Clicar em "Composição da Carteira" (CDA)
+    cda_link = driver.find_element(By.PARTIAL_LINK_TEXT, "Composi")
+    cda_link.click()
+    time.sleep(3)
 
 
 def scrape_fundo(driver, fundo):
     cnpj = fundo["cnpj"]
-    pk_partic = fundo["pk_partic"]
+    cnpj_busca = fundo["cnpj_busca"]
     output_file = fundo["output_file"]
 
-    print(f"--- Processando CNPJ: {cnpj} ---")
+    print(f"\n--- Processando CNPJ: {cnpj} ---")
 
-    # 1. Acessar página de Composição da Carteira diretamente
-    url = f"https://cvmweb.cvm.gov.br/SWB/Sistemas/SCW/CPublica/CDA/CPublicaCDA.aspx?PK_PARTIC={pk_partic}&SemFrame="
-    print(f"Acessando {url} ...")
-    driver.get(url)
-    time.sleep(3)
+    # Navegar até a página CDA do fundo
+    buscar_fundo(driver, cnpj_busca)
 
-    # 2. Verificar competência selecionada (já vem a mais recente por padrão)
+    # Verificar competência selecionada
+    from selenium.webdriver.support.ui import Select
     sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
     competencia = sel.first_selected_option.text
     print(f"Competência: {competencia}")
 
-    # 3. Extrair Patrimônio Líquido, Data, e info do fundo
+    # Extrair Patrimônio Líquido, Data, e info do fundo
     pl_value = driver.find_element(By.ID, "lbPatrimLiq").text
     pl_date = driver.find_element(By.ID, "lbDtRegDoc").text
 
@@ -69,7 +95,7 @@ def scrape_fundo(driver, fundo):
     print(f"Data Recebimento: {pl_date}")
     print()
 
-    # 4. Extrair tabela de aplicações (dlAplics)
+    # Extrair tabela de aplicações (dlAplics)
     aplics_table = driver.find_element(By.ID, "dlAplics")
     aplics_html = aplics_table.get_attribute("outerHTML")
     tables = pd.read_html(StringIO(aplics_html))
@@ -80,7 +106,7 @@ def scrape_fundo(driver, fundo):
 
     df = tables[0]
 
-    # Ajustar headers: as primeiras linhas contêm headers multi-nível
+    # Ajustar headers
     if len(df) > 3:
         row2 = df.iloc[2].tolist()
         row3 = df.iloc[3].tolist()
@@ -120,7 +146,7 @@ def scrape_fundo(driver, fundo):
     print(df.to_string(index=False))
     print()
 
-    # 5. Salvar em Excel
+    # Salvar em Excel
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         resumo = pd.DataFrame({
             "Campo": ["Fundo", "CNPJ", "Competência", "Patrimônio Líquido", "Data Recebimento"],
@@ -150,19 +176,17 @@ def scrape_fundo(driver, fundo):
         df_share.to_excel(writer, sheet_name="Share", index=False)
 
     print(f"Arquivo salvo: {output_file}")
-    print()
 
 
 def main():
     print("CVM FundosReg - Extrator de Composição da Carteira")
-    print()
 
     driver = create_driver()
 
     try:
         for fundo in FUNDOS:
             scrape_fundo(driver, fundo)
-        print("Sucesso! Todos os fundos processados.")
+        print("\nSucesso! Todos os fundos processados.")
     except Exception as e:
         print(f"\nERRO: {e}")
         driver.save_screenshot("cvm_error.png")
