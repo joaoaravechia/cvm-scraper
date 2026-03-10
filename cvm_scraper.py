@@ -10,8 +10,7 @@ from io import StringIO
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
 
 
 FUNDOS = [
@@ -41,29 +40,75 @@ def create_driver():
     return driver
 
 
-def buscar_fundo(driver, cnpj_busca):
-    """Busca o fundo pelo CNPJ na página de busca da CVM e navega até a CDA."""
+def buscar_fundo_cda(driver, cnpj_busca):
+    """Busca o fundo pelo CNPJ e navega até a página CDA (Composição da Carteira)."""
     print(f"Buscando fundo {cnpj_busca} ...")
     driver.get(BUSCA_URL)
     time.sleep(2)
 
-    # Preencher CNPJ e buscar
+    # Preencher CNPJ e clicar em Continuar
     campo = driver.find_element(By.ID, "txtCNPJNome")
     campo.clear()
     campo.send_keys(cnpj_busca)
-    btn = driver.find_element(By.ID, "btnBuscar")
-    btn.click()
+    driver.find_element(By.ID, "btnContinuar").click()
     time.sleep(3)
 
-    # Clicar no link do fundo nos resultados
-    link = driver.find_element(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
-    link.click()
+    # Na página de resultados, clicar no link do fundo (contém PK_PARTIC)
+    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
+    if not links:
+        # Pode ser que os resultados estejam dentro de um frame
+        frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
+        for frame in frames:
+            try:
+                driver.switch_to.frame(frame)
+                links = driver.find_elements(By.CSS_SELECTOR, "a[href*='PK_PARTIC']")
+                if links:
+                    break
+                driver.switch_to.default_content()
+            except Exception:
+                driver.switch_to.default_content()
+
+    if not links:
+        # Tentar pegar todos os links para debug
+        all_links = driver.find_elements(By.TAG_NAME, "a")
+        print(f"Links encontrados: {len(all_links)}")
+        for link in all_links[:10]:
+            print(f"  {link.get_attribute('href')} - {link.text}")
+        raise Exception(f"Nenhum link com PK_PARTIC encontrado para {cnpj_busca}")
+
+    # Clicar no primeiro resultado
+    links[0].click()
     time.sleep(3)
 
-    # Clicar em "Composição da Carteira" (CDA)
-    cda_link = driver.find_element(By.PARTIAL_LINK_TEXT, "Composi")
-    cda_link.click()
-    time.sleep(3)
+    # Agora estamos na página do fundo. Procurar link para CDA (Composição da Carteira)
+    driver.switch_to.default_content()
+
+    # A página do fundo pode usar frames
+    frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
+    for frame in frames:
+        try:
+            driver.switch_to.frame(frame)
+            cda_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Composi")
+            if cda_links:
+                cda_links[0].click()
+                time.sleep(3)
+                return
+            driver.switch_to.default_content()
+        except Exception:
+            driver.switch_to.default_content()
+
+    # Tentar sem frames
+    cda_links = driver.find_elements(By.PARTIAL_LINK_TEXT, "Composi")
+    if cda_links:
+        cda_links[0].click()
+        time.sleep(3)
+        return
+
+    # Se não encontrou "Composição", pode já estar na página CDA
+    if driver.find_elements(By.ID, "ddCOMPTC"):
+        return
+
+    raise Exception(f"Não foi possível navegar até CDA para {cnpj_busca}")
 
 
 def scrape_fundo(driver, fundo):
@@ -73,16 +118,25 @@ def scrape_fundo(driver, fundo):
 
     print(f"\n--- Processando CNPJ: {cnpj} ---")
 
-    # Navegar até a página CDA do fundo
-    buscar_fundo(driver, cnpj_busca)
+    buscar_fundo_cda(driver, cnpj_busca)
 
-    # Verificar competência selecionada
-    from selenium.webdriver.support.ui import Select
+    # Garantir que estamos no conteúdo correto (pode estar em frame)
+    if not driver.find_elements(By.ID, "ddCOMPTC"):
+        driver.switch_to.default_content()
+        frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
+        for frame in frames:
+            try:
+                driver.switch_to.frame(frame)
+                if driver.find_elements(By.ID, "ddCOMPTC"):
+                    break
+                driver.switch_to.default_content()
+            except Exception:
+                driver.switch_to.default_content()
+
     sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
     competencia = sel.first_selected_option.text
     print(f"Competência: {competencia}")
 
-    # Extrair Patrimônio Líquido, Data, e info do fundo
     pl_value = driver.find_element(By.ID, "lbPatrimLiq").text
     pl_date = driver.find_element(By.ID, "lbDtRegDoc").text
 
@@ -95,7 +149,7 @@ def scrape_fundo(driver, fundo):
     print(f"Data Recebimento: {pl_date}")
     print()
 
-    # Extrair tabela de aplicações (dlAplics)
+    # Extrair tabela de aplicações
     aplics_table = driver.find_element(By.ID, "dlAplics")
     aplics_html = aplics_table.get_attribute("outerHTML")
     tables = pd.read_html(StringIO(aplics_html))
@@ -106,11 +160,9 @@ def scrape_fundo(driver, fundo):
 
     df = tables[0]
 
-    # Ajustar headers
     if len(df) > 3:
         row2 = df.iloc[2].tolist()
         row3 = df.iloc[3].tolist()
-
         headers = []
         for r2, r3 in zip(row2, row3):
             r2_str = str(r2).strip() if pd.notna(r2) else ""
@@ -119,7 +171,6 @@ def scrape_fundo(driver, fundo):
                 headers.append(f"{r2_str} - {r3_str}" if r2_str else r3_str)
             else:
                 headers.append(r2_str)
-
         df = df.iloc[4:]
         df.columns = headers
     else:
@@ -129,11 +180,8 @@ def scrape_fundo(driver, fundo):
 
     df = df.reset_index(drop=True)
     df = df.dropna(how="all")
-
-    # Filtrar apenas colunas Ativo e Valores - Mercado
     df = df[["Ativo", "Valores - Mercado"]]
 
-    # Converter formato BR (1.234,56) para float
     df["Valores - Mercado"] = (
         df["Valores - Mercado"]
         .astype(str)
@@ -146,17 +194,14 @@ def scrape_fundo(driver, fundo):
     print(df.to_string(index=False))
     print()
 
-    # Salvar em Excel
     with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
         resumo = pd.DataFrame({
             "Campo": ["Fundo", "CNPJ", "Competência", "Patrimônio Líquido", "Data Recebimento"],
             "Valor": [fund_name, cnpj, competencia, pl_value, pl_date],
         })
         resumo.to_excel(writer, sheet_name="Resumo", index=False)
-
         df.to_excel(writer, sheet_name="Composicao_Carteira", index=False)
 
-        # Aba Share
         df_share = df.copy()
         df_share["Ativo"] = (
             df_share["Ativo"]
@@ -176,6 +221,9 @@ def scrape_fundo(driver, fundo):
         df_share.to_excel(writer, sheet_name="Share", index=False)
 
     print(f"Arquivo salvo: {output_file}")
+
+    # Voltar ao default content para o próximo fundo
+    driver.switch_to.default_content()
 
 
 def main():
