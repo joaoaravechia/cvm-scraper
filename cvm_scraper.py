@@ -66,7 +66,7 @@ def create_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
     driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(60)
+    driver.set_page_load_timeout(120)
     return driver
 
 
@@ -153,7 +153,15 @@ def scrape_fundo(driver, fundo):
 
     url = f"https://cvmweb.cvm.gov.br/SWB/Sistemas/SCW/CPublica/CDA/CPublicaCDA.aspx?PK_PARTIC={pk_partic}&SemFrame="
     print(f"Acessando {url} ...")
-    driver.get(url)
+    for tentativa in range(3):
+        try:
+            driver.get(url)
+            break
+        except Exception as e:
+            print(f"Tentativa {tentativa + 1}/3 falhou: {e}")
+            if tentativa == 2:
+                raise
+            time.sleep(5)
     time.sleep(3)
 
     sel = Select(driver.find_element(By.ID, "ddCOMPTC"))
