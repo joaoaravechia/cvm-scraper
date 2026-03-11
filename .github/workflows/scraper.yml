@@ -46,16 +46,16 @@ jobs:
           INPUT_CNPJS: ${{ github.event.inputs.cnpjs || '' }}
         run: python cvm_scraper.py
 
-      - name: Upload Excels as artifacts
+      - name: Upload Excel as artifact
         uses: actions/upload-artifact@v4
         with:
           name: patrimonio_liquido_cvm
-          path: patrimonio_liquido_cvm_*.xlsx
+          path: patrimonio_liquido_cvm.xlsx
 
-      - name: Commit and push Excels
+      - name: Commit and push Excel
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add patrimonio_liquido_cvm_*.xlsx
-          git diff --cached --quiet || git commit -m "Atualizar planilhas CVM [$(date -u '+%Y-%m-%d')]"
+          git add patrimonio_liquido_cvm.xlsx
+          git diff --cached --quiet || git commit -m "Atualizar planilha CVM [$(date -u '+%Y-%m-%d')]"
           git push
