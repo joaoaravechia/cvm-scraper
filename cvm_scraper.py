@@ -31,6 +31,17 @@ FUNDOS = [
     },
 ]
 
+# Classificação de ativos por fundo (CNPJ -> Ativo -> colunas extras)
+CLASSIFICACAO = {
+    "08.915.927/0001-63": {
+        "Titulos publicos":          {"A/P": "A20", "Risco": "JP2", "Local": "01", "Negocio/Banca": "02"},
+        "Operações Compromissadas":  {"A/P": "A10", "Risco": "JP2", "Local": "01", "Negocio/Banca": "02"},
+        "Disponibilidades":          {"A/P": "A10", "Risco": "998", "Local": "02", "Negocio/Banca": "02"},
+        "Valores a pagar":           {"A/P": "P90", "Risco": "998", "Local": "02", "Negocio/Banca": "02"},
+        "Valores a receber":         {"A/P": "A90", "Risco": "998", "Local": "02", "Negocio/Banca": "02"},
+    },
+}
+
 
 def get_fundos_filtrados():
     """Retorna lista de fundos filtrada por INPUT_CNPJS (se definido)."""
@@ -233,6 +244,14 @@ def scrape_fundo(driver, fundo):
         total = df_share["Valores - Mercado"].sum()
         df_share["Share"] = df_share["Valores - Mercado"] / total
         df_share = df_share.sort_values("Valores - Mercado", ascending=False).reset_index(drop=True)
+
+        # Adicionar colunas de classificação se existirem para este CNPJ
+        if cnpj in CLASSIFICACAO:
+            classif = CLASSIFICACAO[cnpj]
+            for col in ["A/P", "Risco", "Local", "Negocio/Banca"]:
+                df_share[col] = df_share["Ativo"].map(
+                    lambda ativo, c=col: classif.get(ativo, {}).get(c, "")
+                )
 
         print("Share:")
         print(df_share.to_string(index=False))
