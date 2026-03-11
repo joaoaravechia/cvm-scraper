@@ -1,6 +1,6 @@
 """
 Extrai dados da Composição da Carteira de fundos
-do site CVM FundosReg e salva em um único Excel consolidado.
+do site CVM FundosReg e salva em Excel separado por fundo.
 
 Variáveis de ambiente opcionais:
   INPUT_COMPETENCIA  - competência no formato MM/AAAA (ex: "02/2026"). Vazio = mais recente.
@@ -145,9 +145,9 @@ def parse_table(df, table_id):
 
 
 def scrape_fundo(driver, fundo):
-    """Extrai dados de um fundo e retorna (resumo_dict, df_carteira) ou None."""
     cnpj = fundo["cnpj"]
     pk_partic = fundo["pk_partic"]
+    output_file = fundo["output_file"]
 
     print(f"\n--- Processando CNPJ: {cnpj} ---")
 
@@ -196,7 +196,7 @@ def scrape_fundo(driver, fundo):
     table_el, table_id = extract_table(driver)
     if not table_el:
         print(f"ERRO: Nenhuma tabela encontrada para {cnpj}.")
-        return None
+        return
 
     print(f"Tabela encontrada: {table_id}")
     table_html = table_el.get_attribute("outerHTML")
@@ -204,28 +204,43 @@ def scrape_fundo(driver, fundo):
 
     if not tables:
         print(f"ERRO: Não foi possível parsear tabela para {cnpj}.")
-        return None
+        return
 
     df = parse_table(tables[0], table_id)
-    df["Fundo"] = fund_name
-    df["CNPJ"] = cnpj
 
     print(f"Tabela extraída: {df.shape[0]} linhas x {df.shape[1]} colunas")
     print(df.to_string(index=False))
     print()
 
-    resumo = {
-        "Fundo": fund_name,
-        "CNPJ": cnpj,
-        "Competência": competencia,
-        "Patrimônio Líquido": pl_value,
-        "Data Recebimento": pl_date,
-    }
+    # Salvar em Excel
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        resumo = pd.DataFrame({
+            "Campo": ["Fundo", "CNPJ", "Competência", "Patrimônio Líquido", "Data Recebimento"],
+            "Valor": [fund_name, cnpj, competencia, pl_value, pl_date],
+        })
+        resumo.to_excel(writer, sheet_name="Resumo", index=False)
+        df.to_excel(writer, sheet_name="Composicao_Carteira", index=False)
 
-    return resumo, df
+        # Aba Share
+        df_share = df.copy()
+        df_share["Ativo"] = (
+            df_share["Ativo"]
+            .str.split(r"(?:Cod\.|Descrição:)", regex=True)
+            .str[0]
+            .str.strip()
+        )
+        df_share = df_share.groupby("Ativo", as_index=False)["Valores - Mercado"].sum()
+        total = df_share["Valores - Mercado"].sum()
+        df_share["Share"] = df_share["Valores - Mercado"] / total
+        df_share = df_share.sort_values("Valores - Mercado", ascending=False).reset_index(drop=True)
 
+        print("Share:")
+        print(df_share.to_string(index=False))
+        print()
 
-OUTPUT_FILE = "patrimonio_liquido_cvm.xlsx"
+        df_share.to_excel(writer, sheet_name="Share", index=False)
+
+    print(f"Arquivo salvo: {output_file}")
 
 
 def main():
@@ -240,17 +255,10 @@ def main():
 
     driver = create_driver()
 
-    resumos = []
-    carteiras = []
-
     try:
         for fundo in fundos:
-            resultado = scrape_fundo(driver, fundo)
-            if resultado:
-                resumo, df = resultado
-                resumos.append(resumo)
-                carteiras.append(df)
-        print("\nTodos os fundos processados.")
+            scrape_fundo(driver, fundo)
+        print("\nSucesso! Todos os fundos processados.")
     except Exception as e:
         print(f"\nERRO: {e}")
         driver.save_screenshot("cvm_error.png")
@@ -258,41 +266,6 @@ def main():
         raise
     finally:
         driver.quit()
-
-    if not carteiras:
-        print("Nenhum dado extraído.")
-        sys.exit(1)
-
-    # Consolidar em um único Excel
-    df_resumo = pd.DataFrame(resumos)
-    df_carteira = pd.concat(carteiras, ignore_index=True)
-
-    # Reordenar colunas: Fundo, CNPJ, Ativo, Valores
-    df_carteira = df_carteira[["Fundo", "CNPJ", "Ativo", "Valores - Mercado"]]
-
-    # Share consolidado (todos os fundos juntos)
-    df_share = df_carteira.copy()
-    df_share["Ativo"] = (
-        df_share["Ativo"]
-        .str.split(r"(?:Cod\.|Descrição:)", regex=True)
-        .str[0]
-        .str.strip()
-    )
-    df_share = df_share.groupby("Ativo", as_index=False)["Valores - Mercado"].sum()
-    total = df_share["Valores - Mercado"].sum()
-    df_share["Share"] = df_share["Valores - Mercado"] / total
-    df_share = df_share.sort_values("Valores - Mercado", ascending=False).reset_index(drop=True)
-
-    print("\nShare consolidado:")
-    print(df_share.to_string(index=False))
-    print()
-
-    with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
-        df_resumo.to_excel(writer, sheet_name="Resumo", index=False)
-        df_carteira.to_excel(writer, sheet_name="Composicao_Carteira", index=False)
-        df_share.to_excel(writer, sheet_name="Share", index=False)
-
-    print(f"Arquivo salvo: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
