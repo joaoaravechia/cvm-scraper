@@ -34,7 +34,7 @@ FUNDOS = [
 # Classificação de ativos por fundo (CNPJ -> Ativo -> colunas extras)
 CLASSIFICACAO = {
     "08.915.927/0001-63": {
-        "Titulos publicos":          {"A/P": "A20", "Risco": "JP2", "Local": "01", "Negocio/Banca": "02"},
+        "Títulos Públicos":          {"A/P": "A20", "Risco": "JP2", "Local": "01", "Negocio/Banca": "02"},
         "Operações Compromissadas":  {"A/P": "A10", "Risco": "JP2", "Local": "01", "Negocio/Banca": "02"},
         "Disponibilidades":          {"A/P": "A10", "Risco": "998", "Local": "02", "Negocio/Banca": "02"},
         "Valores a pagar":           {"A/P": "P90", "Risco": "998", "Local": "02", "Negocio/Banca": "02"},
